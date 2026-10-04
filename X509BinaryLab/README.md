@@ -11,7 +11,7 @@ It does **not** shell out to OpenSSL, `certreq.exe`, BouncyCastle, NuGet package
 ## Flat-folder layout
 
 ```text
-MILEHIGH-Flat-v1.0.3/
+MILEHIGH-Flat-v1.0.4/
 ├── X509BinaryLab.ps1
 ├── New-TestRootCA.ps1
 ├── New-TestServerCertificate.ps1

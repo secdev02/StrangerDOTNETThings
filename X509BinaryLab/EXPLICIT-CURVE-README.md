@@ -136,3 +136,8 @@ That separation is deliberate: the MILEHIGH library controls the X.509/ASN.1 byt
 - ANSI X9.62 / SEC 1 — EC domain-parameter structures and point representation
 
 Do not use an explicit-curve test certificate as a public Web PKI or production enterprise certificate. Use a normal named curve for standards-conforming PKIX deployment.
+
+
+## PowerShell runtime compatibility
+
+v1.0.4 avoids direct `ECCurve.NamedCurves` member access because Windows PowerShell and PowerShell 7 expose that nested .NET type differently. The example resolves named curves by reflection. On legacy ECDSA APIs that return IEEE-P1363 signatures, MILEHIGH converts `r || s` to the RFC 3279 DER `SEQUENCE(INTEGER r, INTEGER s)` form required by X.509. PKCS#8 private-key export is optional and capability-detected.

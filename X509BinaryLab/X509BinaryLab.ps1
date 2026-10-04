@@ -155,6 +155,103 @@ function Get-X509SignatureAlgorithmIdentifier {
     }
 }
 
+function Get-X509NamedCurve {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][ValidateSet('P256','P384','P521')][string]$Curve)
+
+    $propertyName = switch ($Curve) { 'P256' {'nistP256'} 'P384' {'nistP384'} 'P521' {'nistP521'} }
+    $oid = switch ($Curve) { 'P256' {'1.2.840.10045.3.1.7'} 'P384' {'1.3.132.0.34'} 'P521' {'1.3.132.0.35'} }
+
+    # PowerShell does not consistently resolve ECCurve.NamedCurves across
+    # Windows PowerShell and PowerShell 7. Resolve the nested type via reflection.
+    $namedCurvesType = [Security.Cryptography.ECCurve].GetNestedType('NamedCurves')
+    if ($null -ne $namedCurvesType) {
+        $prop = $namedCurvesType.GetProperty($propertyName, [Reflection.BindingFlags]'Public,Static')
+        if ($null -ne $prop) { return $prop.GetValue($null, $null) }
+    }
+
+    $createFromOid = [Security.Cryptography.ECCurve].GetMethod('CreateFromOid', [type[]]@([Security.Cryptography.Oid]))
+    if ($null -ne $createFromOid) {
+        return $createFromOid.Invoke($null, @([Security.Cryptography.Oid]::new($oid)))
+    }
+
+    $createFromFriendlyName = [Security.Cryptography.ECCurve].GetMethod('CreateFromFriendlyName', [type[]]@([string]))
+    if ($null -ne $createFromFriendlyName) {
+        return $createFromFriendlyName.Invoke($null, @($propertyName))
+    }
+
+    throw "This runtime cannot construct the named EC curve $Curve ($oid)."
+}
+
+function Convert-EcdsaP1363ToDer {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][byte[]]$Signature)
+    if (($Signature.Length % 2) -ne 0 -or $Signature.Length -eq 0) { throw 'Invalid IEEE-P1363 ECDSA signature length.' }
+    $half = [int]($Signature.Length / 2)
+    $r = [byte[]]::new($half); $s = [byte[]]::new($half)
+    [Array]::Copy($Signature, 0, $r, 0, $half)
+    [Array]::Copy($Signature, $half, $s, 0, $half)
+    return New-DerSequence (New-DerIntegerUnsigned $r) (New-DerIntegerUnsigned $s)
+}
+
+function Convert-EcdsaDerToP1363 {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][byte[]]$SignatureDer,[Parameter(Mandatory)][int]$FieldBytes)
+    $outer = Read-DerNode $SignatureDer 0 $SignatureDer.Length
+    if ($outer.Tag -ne 0x30 -or $outer.End -ne $SignatureDer.Length) { throw 'ECDSA signature is not a DER SEQUENCE.' }
+    $rNode = Read-DerNode $SignatureDer $outer.ValueOffset $outer.End
+    $sNode = Read-DerNode $SignatureDer $rNode.End $outer.End
+    if ($rNode.Tag -ne 0x02 -or $sNode.Tag -ne 0x02) { throw 'ECDSA signature must contain two INTEGER values.' }
+    $result = [byte[]]::new($FieldBytes * 2)
+    foreach ($pair in @(@($rNode,0), @($sNode,$FieldBytes))) {
+        $node=$pair[0]; $dest=[int]$pair[1]
+        $v=[byte[]]::new($node.Length); [Array]::Copy($SignatureDer,$node.ValueOffset,$v,0,$node.Length)
+        while ($v.Length -gt 1 -and $v[0] -eq 0) { $v = $v[1..($v.Length-1)] }
+        if ($v.Length -gt $FieldBytes) { throw 'ECDSA INTEGER is larger than the target field size.' }
+        [Array]::Copy($v,0,$result,$dest + $FieldBytes - $v.Length,$v.Length)
+    }
+    return $result
+}
+
+function Export-X509Pkcs8PrivateKey {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Key)
+
+    $m = $Key.GetType().GetMethod('ExportPkcs8PrivateKey', [Type[]]@())
+    if ($null -ne $m) { return [byte[]]$m.Invoke($Key, @()) }
+
+    # Windows PowerShell / .NET Framework fallback for CNG-backed keys.
+    if ($Key.PSObject.Properties.Name -contains 'Key' -and $null -ne $Key.Key) {
+        $blobFormat = [Security.Cryptography.CngKeyBlobFormat]::Pkcs8PrivateBlob
+        return [byte[]]$Key.Key.Export($blobFormat)
+    }
+
+    return $null
+}
+
+function Test-X509EcdsaSignature {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Key,
+        [Parameter(Mandatory)][byte[]]$Data,
+        [Parameter(Mandatory)][byte[]]$SignatureDer,
+        [Parameter(Mandatory)][Security.Cryptography.HashAlgorithmName]$HashAlgorithm
+    )
+    $fmtType = 'System.Security.Cryptography.DSASignatureFormat' -as [type]
+    if ($null -ne $fmtType) {
+        $m = $Key.GetType().GetMethods() | Where-Object {
+            $_.Name -eq 'VerifyData' -and $_.GetParameters().Count -eq 4 -and $_.GetParameters()[3].ParameterType.FullName -eq $fmtType.FullName
+        } | Select-Object -First 1
+        if ($null -ne $m) {
+            $fmt = [Enum]::Parse($fmtType, 'Rfc3279DerSequence')
+            return [bool]$m.Invoke($Key, @($Data,$SignatureDer,$HashAlgorithm,$fmt))
+        }
+    }
+    $fieldBytes = $Key.ExportParameters($false).Q.X.Length
+    $raw = Convert-EcdsaDerToP1363 -SignatureDer $SignatureDer -FieldBytes $fieldBytes
+    return [bool]$Key.VerifyData($Data,$raw,$HashAlgorithm)
+}
+
 function New-X509Key {
     [CmdletBinding()]
     param(
@@ -163,9 +260,9 @@ function New-X509Key {
     )
     switch ($Algorithm) {
         'RSA' { return [Security.Cryptography.RSA]::Create($RsaKeySize) }
-        'ECDSA-P256' { return [Security.Cryptography.ECDsa]::Create([Security.Cryptography.ECCurve]::NamedCurves.nistP256) }
-        'ECDSA-P384' { return [Security.Cryptography.ECDsa]::Create([Security.Cryptography.ECCurve]::NamedCurves.nistP384) }
-        'ECDSA-P521' { return [Security.Cryptography.ECDsa]::Create([Security.Cryptography.ECCurve]::NamedCurves.nistP521) }
+        'ECDSA-P256' { return [Security.Cryptography.ECDsa]::Create((Get-X509NamedCurve P256)) }
+        'ECDSA-P384' { return [Security.Cryptography.ECDsa]::Create((Get-X509NamedCurve P384)) }
+        'ECDSA-P521' { return [Security.Cryptography.ECDsa]::Create((Get-X509NamedCurve P521)) }
     }
 }
 function Get-X509SubjectPublicKeyInfo { param([Parameter(Mandatory)]$Key) [byte[]]$Key.ExportSubjectPublicKeyInfo() }
@@ -287,7 +384,20 @@ function Invoke-X509Sign {
     $hn=[Security.Cryptography.HashAlgorithmName]::$hash
     if($SignatureAlgorithm -like 'RSA-PSS-*') { return [byte[]]$Signer.SignData($Data,$hn,[Security.Cryptography.RSASignaturePadding]::Pss) }
     if($SignatureAlgorithm -like 'RSA-*') { return [byte[]]$Signer.SignData($Data,$hn,[Security.Cryptography.RSASignaturePadding]::Pkcs1) }
-    if($SignatureAlgorithm -like 'ECDSA-*') { return [byte[]]$Signer.SignData($Data,$hn,[Security.Cryptography.DSASignatureFormat]::Rfc3279DerSequence) }
+    if($SignatureAlgorithm -like 'ECDSA-*') {
+        $fmtType = 'System.Security.Cryptography.DSASignatureFormat' -as [type]
+        if ($null -ne $fmtType) {
+            $m = $Signer.GetType().GetMethods() | Where-Object {
+                $_.Name -eq 'SignData' -and $_.GetParameters().Count -eq 3 -and $_.GetParameters()[2].ParameterType.FullName -eq $fmtType.FullName
+            } | Select-Object -First 1
+            if ($null -ne $m) {
+                $fmt = [Enum]::Parse($fmtType, 'Rfc3279DerSequence')
+                return [byte[]]$m.Invoke($Signer, @($Data,$hn,$fmt))
+            }
+        }
+        # Legacy ECDsa.SignData returns IEEE-P1363 r||s; X.509 needs RFC 3279 DER.
+        return (Convert-EcdsaP1363ToDer -Signature ([byte[]]$Signer.SignData($Data,$hn)))
+    }
     throw "Unsupported built-in signer algorithm: $SignatureAlgorithm"
 }
 
@@ -352,7 +462,7 @@ function New-X509SelfSignedCertificate {
     try {
         $spki=Get-X509SubjectPublicKeyInfo $key
         $c=New-X509CertificateDer -Subject $Subject -Issuer $Subject -SubjectPublicKeyInfo $spki -Signer $key -SignatureAlgorithm $SignatureAlgorithm -NotBefore $NotBefore -NotAfter $NotAfter -Extension $Extension -Validation $Validation
-        $c | Add-Member -NotePropertyName PrivateKeyPkcs8 -NotePropertyValue ([byte[]]$key.ExportPkcs8PrivateKey())
+        $pkcs8 = Export-X509Pkcs8PrivateKey $key; if ($null -ne $pkcs8) { $c | Add-Member -NotePropertyName PrivateKeyPkcs8 -NotePropertyValue ([byte[]]$pkcs8) }
         return $c
     } finally { $key.Dispose() }
 }

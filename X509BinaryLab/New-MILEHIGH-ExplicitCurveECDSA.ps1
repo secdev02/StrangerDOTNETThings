@@ -145,7 +145,7 @@ parser/validator test vector.
 
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 
-$key = [Security.Cryptography.ECDsa]::Create([Security.Cryptography.ECCurve]::NamedCurves.nistP256)
+$key = [Security.Cryptography.ECDsa]::Create((Get-X509NamedCurve P256))
 try {
     $public = $key.ExportParameters($false)
 
@@ -176,7 +176,8 @@ try {
         -Validation AsnOnly
 
     # Preserve the private key only as a separate PKCS#8 artifact for lab use.
-    $cert | Add-Member -NotePropertyName PrivateKeyPkcs8 -NotePropertyValue ([byte[]]$key.ExportPkcs8PrivateKey()) -Force
+    $pkcs8 = Export-X509Pkcs8PrivateKey $key
+    if ($null -ne $pkcs8) { $cert | Add-Member -NotePropertyName PrivateKeyPkcs8 -NotePropertyValue ([byte[]]$pkcs8) -Force }
 
     $derPath = Join-Path $OutputDirectory 'MILEHIGH-explicit-curve-p256.der'
     $pemPath = Join-Path $OutputDirectory 'MILEHIGH-explicit-curve-p256.pem'
@@ -184,17 +185,21 @@ try {
     $paramsPath = Join-Path $OutputDirectory 'MILEHIGH-explicit-curve-parameters.der'
 
     Export-X509BinaryLabArtifact -Certificate $cert -Path $derPath | Out-Null
-    Export-X509BinaryLabArtifact -Certificate $cert -Path $pemPath -Pem -PrivateKeyPem | Out-Null
+    if ($cert.PSObject.Properties.Name -contains 'PrivateKeyPkcs8') {
+        Export-X509BinaryLabArtifact -Certificate $cert -Path $pemPath -Pem -PrivateKeyPem | Out-Null
+    } else {
+        Export-X509BinaryLabArtifact -Certificate $cert -Path $pemPath -Pem | Out-Null
+        Write-Warning 'This runtime cannot export the ECDSA private key as PKCS#8. Certificate generation continues without a .key.pem artifact.'
+    }
     [IO.File]::WriteAllBytes($spkiPath, $spki)
     [IO.File]::WriteAllBytes($paramsPath, $specifiedCurveDer)
 
     $asnValidation = Test-X509CertificateDer -CertificateDer $cert.CertificateDer -Mode AsnOnly
-    $signatureValid = $key.VerifyData(
-        $cert.TbsCertificateDer,
-        $cert.Signature,
-        [Security.Cryptography.HashAlgorithmName]::SHA256,
-        [Security.Cryptography.DSASignatureFormat]::Rfc3279DerSequence
-    )
+    $signatureValid = Test-X509EcdsaSignature `
+        -Key $key `
+        -Data $cert.TbsCertificateDer `
+        -SignatureDer $cert.Signature `
+        -HashAlgorithm ([Security.Cryptography.HashAlgorithmName]::SHA256)
 
     $nativeAccepted = $false
     $nativeMessage = $null
@@ -218,7 +223,7 @@ try {
         PlatformX509ParserMessage  = $nativeMessage
         CertificateDer             = $derPath
         CertificatePem             = $pemPath
-        PrivateKeyPem              = [IO.Path]::ChangeExtension($pemPath, '.key.pem')
+        PrivateKeyPem              = if ($cert.PSObject.Properties.Name -contains 'PrivateKeyPkcs8') { [IO.Path]::ChangeExtension($pemPath, '.key.pem') } else { $null }
         SubjectPublicKeyInfoDer     = $spkiPath
         SpecifiedCurveDer          = $paramsPath
     } | Format-List
