@@ -1,4 +1,4 @@
-. "$PSScriptRoot\..\X509BinaryLab.ps1"
+. (Join-Path $PSScriptRoot 'X509BinaryLab.ps1')
 
 $ext = @(
     New-X509BasicConstraintsExtension -CertificateAuthority $false
@@ -9,6 +9,6 @@ $ext = @(
     New-X509CrlDistributionPointsExtension -Uri 'http://pki.test/root.crl'
 )
 
-$cert = New-X509SelfSignedCertificate -Subject 'CN=inventory.test,O=X509BinaryLab,C=US' -KeyAlgorithm RSA -RsaKeySize 3072 -SignatureAlgorithm RSA-PSS-SHA256 -Extension $ext
+$cert = New-X509SelfSignedCertificate -Subject 'CN=inventory.test,O=MILEHIGH,C=US' -KeyAlgorithm RSA -RsaKeySize 3072 -SignatureAlgorithm RSA-PSS-SHA256 -Extension $ext
 $cert | Export-X509BinaryLabArtifact -Path "$PSScriptRoot\inventory.test.pem" -Pem -PrivateKeyPem
 $cert | Select-Object Subject,Issuer,SerialHex,SignatureAlgorithm

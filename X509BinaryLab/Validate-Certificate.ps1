@@ -1,5 +1,5 @@
 param([Parameter(Mandatory)][string]$Path)
-. "$PSScriptRoot\..\X509BinaryLab.ps1"
+. (Join-Path $PSScriptRoot 'X509BinaryLab.ps1')
 
 $bytes = [IO.File]::ReadAllBytes((Resolve-Path $Path))
 if ([Text.Encoding]::ASCII.GetString($bytes,0,[Math]::Min($bytes.Length,32)) -match 'BEGIN CERTIFICATE') {

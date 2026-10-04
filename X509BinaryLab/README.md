@@ -8,6 +8,23 @@ MILEHIGH is named for Denver’s mile-high identity: **5,280 feet equals one sta
 
 It does **not** shell out to OpenSSL, `certreq.exe`, BouncyCastle, NuGet packages, or other third-party components. Cryptographic signing uses the .NET runtime that ships underneath PowerShell. Certificate layout and common extensions are assembled from DER primitives so you can inspect and override the exact bytes being signed.
 
+## Flat-folder layout
+
+```text
+MILEHIGH-Flat-v1.0.3/
+├── X509BinaryLab.ps1
+├── New-TestRootCA.ps1
+├── New-TestServerCertificate.ps1
+├── Validate-Certificate.ps1
+├── New-MILEHIGH-ExplicitCurveECDSA.ps1
+├── README.md
+├── EXPLICIT-CURVE-README.md
+└── REFERENCES.md
+```
+
+All script-to-library references are local to this one directory.
+
+
 ## What it supports
 
 Fully built-in signing paths:
@@ -65,6 +82,28 @@ The default constructor uses `-Validation Strict`. Before returning a certificat
 For parser-fuzzing or deliberately unusual test vectors, select `-Validation AsnOnly` or `-Validation None` explicitly. This makes malformed or platform-rejected cases opt-in instead of accidental.
 
 ## Quick start: RSA-PSS self-signed certificate
+
+### Example script location
+
+MILEHIGH is distributed as a **flat folder**. Keep `X509BinaryLab.ps1` in the same directory as the example scripts. Each example loads it with:
+
+```powershell
+. (Join-Path $PSScriptRoot 'X509BinaryLab.ps1')
+```
+
+This avoids parent-directory assumptions and makes the folder portable.
+
+For your own scripts, the simplest import when the script is beside the engine is:
+
+```powershell
+. (Join-Path $PSScriptRoot 'X509BinaryLab.ps1')
+```
+
+When working interactively from the package root:
+
+```powershell
+. .\X509BinaryLab.ps1
+```
 
 ```powershell
 . .\X509BinaryLab.ps1
@@ -340,3 +379,14 @@ This makes the certificate layer independent of a particular crypto provider whi
 - RFC 8410 — Ed25519/Ed448 X.509 algorithm identifiers
 - FIPS 204 — ML-DSA
 
+
+## Explicit-Curve ECDSA Test
+
+A dedicated interoperability test is included at:
+
+```text
+New-MILEHIGH-ExplicitCurveECDSA.ps1
+EXPLICIT-CURVE-README.md
+```
+
+It encodes the complete P-256 domain as an ANSI X9.62 `SpecifiedECDomain` inside `SubjectPublicKeyInfo` rather than using the normal named-curve OID. This is intentionally outside the RFC 5480 PKIX profile and is provided for ASN.1, parser, and validation testing.
